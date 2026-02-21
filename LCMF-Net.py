@@ -24,7 +24,7 @@ def split_indices_by_year(n_samples: int = 18876, years: int = 13, months: int =
 
 def gen_background(target):
     """生成历史平均场: (12, 121, 36, 250)"""
-    return target.reshape(13, 12, 121, 36, 250).mean(axis=(0))
+    return target.reshape(13, 12, 121, 36, 250).mean(axis=(0, 2))
 
 
 # ==================== 数据集 ====================
@@ -374,4 +374,5 @@ def main():
 
 
 if __name__ == "__main__":
+
     main()
