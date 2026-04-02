@@ -1,7 +1,7 @@
 # AI-TL2D-model
 This document presents the Python code for two baseline models, detailing their network architectures and training procedures.
 
-Background: In 2026, we submitted a manuscript to JASA describing a lightweight two-dimensional propagation loss prediction model named LCMF-Net. To highlight the model’s performance and lightweight characteristics, we proposed two baseline models for comparison based on the classic U‑Net and conditional GAN architectures, referred to as U‑Net‑2D and GAN‑2D, respectively.
+Background: In 2026, we submitted a manuscript to JASA describing a lightweight two-dimensional propagation loss prediction model named LCMF-Net. To highlight the model’s performance and lightweight characteristics, we proposed two baseline models for comparison based on the classic U‑Net and GAN architectures, referred to as U‑Net‑2D and GAN‑2D, respectively.
 
 Detailed descriptions of the two baseline models are as follows:
 
