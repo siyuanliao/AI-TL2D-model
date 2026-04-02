@@ -1,4 +1,4 @@
-# 二维定深声传播损失场预测-基准模型：可调通道数的轻量化U-Net
+# 2D Constant-Depth Sound Propagation Loss Field Prediction - Baseline Model: Lightweight U-Net with Adjustable Channels
 import os
 import time
 import numpy as np
@@ -10,10 +10,10 @@ from dataclasses import dataclass
 from my_functions import calculate_model_complexity
 
 
-# ==================== 数据工具 ====================
+# ==================== Data Utilities ====================
 def split_indices_by_year(n_samples: int = 18876, years: int = 13, months: int = 12, points: int = 121):
-    """按年份划分训练/验证/测试集索引"""
-    assert n_samples == years * months * points, f"样本数 {n_samples} 与 {years}*{months}*{points} 不匹配"
+    """Split indices into train/validation/test sets by year"""
+    assert n_samples == years * months * points, f"Number of samples {n_samples} does not match {years}*{months}*{points}"
     
     year_ids = np.repeat(np.arange(1, years + 1), months * points)
     train_idx = np.where(np.isin(year_ids, list(range(1, 8)) + [10, 11, 12, 13]))[0]
@@ -23,11 +23,11 @@ def split_indices_by_year(n_samples: int = 18876, years: int = 13, months: int =
 
 
 def gen_background(target):
-    """生成历史平均场: (12, 36, 250)"""
+    """Generate historical mean field: (12, 36, 250)"""
     return target.reshape(13, 12, 121, 36, 250).mean(axis=(0, 2))
 
 
-# ==================== 数据集 ====================
+# ==================== Dataset ====================
 class SoundField2DDataset(Dataset):
     def __init__(self, input1, input2, target, indices):
         self.input1 = input1[indices].astype(np.float32)
@@ -45,9 +45,9 @@ class SoundField2DDataset(Dataset):
         return torch.from_numpy(self.input1[idx]), torch.from_numpy(x2), torch.from_numpy(y)
 
 
-# ==================== 基准模型：轻量化U-Net ====================
+# ==================== Baseline Model: Lightweight U-Net ====================
 class DoubleConv(nn.Module):
-    """U-Net中的双层卷积块"""
+    """Double convolution block in U-Net"""
     def __init__(self, in_channels, out_channels, mid_channels=None, dropout=0.05):
         super().__init__()
         if not mid_channels:
@@ -68,7 +68,7 @@ class DoubleConv(nn.Module):
 
 
 class DownBlock(nn.Module):
-    """下采样块"""
+    """Downsampling block"""
     def __init__(self, in_channels, out_channels, dropout=0.05):
         super().__init__()
         self.maxpool_conv = nn.Sequential(
@@ -81,7 +81,7 @@ class DownBlock(nn.Module):
 
 
 class UpBlock(nn.Module):
-    """上采样块"""
+    """Upsampling block"""
     def __init__(self, in_channels, out_channels, bilinear=True, dropout=0.05):
         super().__init__()
         if bilinear:
@@ -93,7 +93,7 @@ class UpBlock(nn.Module):
     
     def forward(self, x1, x2):
         x1 = self.up(x1)
-        # 处理尺寸对齐问题
+        # Handle dimension alignment issues
         diffY = x2.size()[2] - x1.size()[2]
         diffX = x2.size()[3] - x1.size()[3]
         x1 = F.pad(x1, [diffX // 2, diffX - diffX // 2,
@@ -103,7 +103,7 @@ class UpBlock(nn.Module):
 
 
 class ConditionEncoder(nn.Module):
-    """环境参数编码器"""
+    """Environmental parameter encoder"""
     def __init__(self, x1_dim=52, cond_dim=128):
         super().__init__()
         self.encoder = nn.Sequential(
@@ -120,11 +120,11 @@ class ConditionEncoder(nn.Module):
 
 class UNet2D(nn.Module):
     """
-    基准模型：可调通道数的轻量化U-Net
-    参数:
-        base_channels: 基础通道数，可调整网络参数量
-        cond_dim: 条件向量维度
-        bilinear: 是否使用双线性插值上采样
+    Baseline model: Lightweight U-Net with adjustable channels
+    Args:
+        base_channels: Base number of channels, adjustable to control model size
+        cond_dim: Dimension of condition vector
+        bilinear: Whether to use bilinear upsampling
     """
     def __init__(self, x1_dim=52, base_channels=32, cond_dim=128, 
                  bilinear=True, dropout=0.05):
@@ -133,23 +133,23 @@ class UNet2D(nn.Module):
         self.bilinear = bilinear
         self.cond_dim = cond_dim
         
-        # 条件编码器
+        # Condition encoder
         self.cond_encoder = ConditionEncoder(x1_dim, cond_dim)
         
-        # 初始卷积层
+        # Initial convolution layer
         self.inc = DoubleConv(1 + cond_dim // 4, base_channels, dropout=dropout)
         
-        # 下采样路径
+        # Downsampling path
         self.down1 = DownBlock(base_channels, base_channels * 2, dropout=dropout)
         self.down2 = DownBlock(base_channels * 2, base_channels * 4, dropout=dropout)
         self.down3 = DownBlock(base_channels * 4, base_channels * 8, dropout=dropout)
         
-        # 瓶颈层
+        # Bottleneck layer
         factor = 2 if bilinear else 1
         self.bottleneck = DoubleConv(base_channels * 8, base_channels * 16 // factor, dropout=dropout)
         
-        # 条件融合模块
-        # 瓶颈层输出通道数: base_channels * 16 // factor
+        # Condition fusion module
+        # Bottleneck output channels: base_channels * 16 // factor
         bottleneck_channels = base_channels * 16 // factor
         self.cond_fusion = nn.Sequential(
             nn.Linear(bottleneck_channels + cond_dim, bottleneck_channels),
@@ -157,17 +157,17 @@ class UNet2D(nn.Module):
             nn.Dropout(p=dropout)
         )
         
-        # 上采样路径
-        # 注意: UpBlock的in_channels是上采样后与对应层拼接后的通道数
-        # 对于up1: 输入是融合后的特征(维度=bottleneck_channels) + 下采样特征(维度=base_channels*4)
+        # Upsampling path
+        # Note: The in_channels of UpBlock is the sum of channels after upsampling and the corresponding encoder features
+        # For up1: input is fused features (dimension = bottleneck_channels) + encoder features (dimension = base_channels*4)
         self.up1 = UpBlock(bottleneck_channels + base_channels * 4, base_channels * 8, bilinear, dropout=dropout)
         self.up2 = UpBlock(base_channels * 8 + base_channels * 2, base_channels * 4, bilinear, dropout=dropout)
         self.up3 = UpBlock(base_channels * 4 + base_channels, base_channels, bilinear, dropout=dropout)
         
-        # 输出层
+        # Output layer
         self.outc = nn.Conv2d(base_channels, 1, kernel_size=1)
         
-        # 初始化
+        # Initialize
         self._initialize_weights()
     
     def _initialize_weights(self):
@@ -184,63 +184,63 @@ class UNet2D(nn.Module):
     def forward(self, x1, x2):
         """
         Args:
-            x1: 条件向量 [batch, x1_dim]
-            x2: 历史平均场输入 [batch, height=36, width=250]
+            x1: Condition vector [batch, x1_dim]
+            x2: Historical mean field input [batch, height=36, width=250]
         Returns:
-            二维传播损失场 [batch, height=36, width=250]
+            2D propagation loss field [batch, height=36, width=250]
         """
         batch_size = x1.size(0)
         
-        # 添加通道维度
+        # Add channel dimension
         x2 = x2.unsqueeze(1)  # [batch, 1, 36, 250]
         
-        # 编码条件向量
+        # Encode condition vector
         cond = self.cond_encoder(x1)  # [batch, cond_dim]
         
-        # 将条件向量扩展到空间维度
+        # Expand condition vector to spatial dimensions
         cond_spatial = cond.unsqueeze(-1).unsqueeze(-1)  # [batch, cond_dim, 1, 1]
         cond_spatial = cond_spatial.expand(-1, -1, 36, 250)  # [batch, cond_dim, 36, 250]
         
-        # 选择部分条件通道与输入拼接
-        cond_part = cond_spatial[:, :self.cond_dim // 4, :, :]  # 使用1/4的条件通道
+        # Select part of condition channels to concatenate with input
+        cond_part = cond_spatial[:, :self.cond_dim // 4, :, :]  # Use 1/4 of condition channels
         x = torch.cat([x2, cond_part], dim=1)  # [batch, 1+cond_dim//4, 36, 250]
         
-        # 编码路径
+        # Encoding path
         x1_enc = self.inc(x)  # [batch, base_channels, 36, 250]
         x2_enc = self.down1(x1_enc)  # [batch, base_channels*2, 18, 125]
         x3_enc = self.down2(x2_enc)  # [batch, base_channels*4, 9, 62]
         x4_enc = self.down3(x3_enc)  # [batch, base_channels*8, 4, 31]
         
-        # 瓶颈层
+        # Bottleneck layer
         bottleneck_out = self.bottleneck(x4_enc)  # [batch, base_channels*16//factor, 4, 31]
         
-        # 全局平均池化获取全局特征
+        # Global average pooling to obtain global features
         global_feat = F.adaptive_avg_pool2d(bottleneck_out, (1, 1))  # [batch, base_channels*16//factor, 1, 1]
         global_feat = global_feat.flatten(1)  # [batch, base_channels*16//factor]
         
-        # 条件融合
+        # Condition fusion
         fused = torch.cat([global_feat, cond], dim=1)  # [batch, base_channels*16//factor + cond_dim]
         fused = self.cond_fusion(fused)  # [batch, base_channels*16//factor]
         
-        # 重塑条件特征
+        # Reshape condition features
         fused = fused.unsqueeze(-1).unsqueeze(-1)  # [batch, base_channels*16//factor, 1, 1]
-        # 扩展回原来的空间尺寸
+        # Expand back to original spatial size
         fused_spatial = fused.expand(-1, -1, 4, 31)  # [batch, base_channels*16//factor, 4, 31]
         
-        # 与瓶颈层输出相加（残差连接）
+        # Add to bottleneck output (residual connection)
         x4_fused = bottleneck_out + fused_spatial  # [batch, base_channels*16//factor, 4, 31]
         
-        # 解码路径
+        # Decoding path
         x = self.up1(x4_fused, x3_enc)  # [batch, base_channels*8, 9, 62]
         x = self.up2(x, x2_enc)  # [batch, base_channels*4, 18, 125]
         x = self.up3(x, x1_enc)  # [batch, base_channels, 36, 250]
         
-        # 输出
+        # Output
         out = self.outc(x)  # [batch, 1, 36, 250]
         return out.squeeze(1)  # [batch, 36, 250]
 
 
-# ==================== 训练工具 ====================
+# ==================== Training Utilities ====================
 @dataclass
 class Metrics:
     loss: float
@@ -259,30 +259,30 @@ def set_seed(seed=42):
         torch.cuda.manual_seed_all(seed)
 
 
-# ==================== 主训练函数 ====================
+# ==================== Main Training Function ====================
 def main():
-    # 配置参数
+    # Configuration parameters
     out_dir = "./outputs_2d_baseline"
     epochs, batch_size = 120, 16
     lr, weight_decay = 1e-3, 1e-4
     patience, seed = 20, 42
     
-    # 网络参数（可调整以控制参数量）
-    base_channels = 32  # 基础通道数，可调整：16, 32, 64等
-    cond_dim = 128  # 条件向量维度
-    bilinear = True  # 上采样方式
+    # Network parameters (adjustable to control model size)
+    base_channels = 32  # Base number of channels, adjustable: 16, 32, 64, etc.
+    cond_dim = 128  # Dimension of condition vector
+    bilinear = True  # Upsampling method
     
     set_seed(seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"使用设备: {device}")
-    print(f"基准模型参数: base_channels={base_channels}, cond_dim={cond_dim}")
+    print(f"Using device: {device}")
+    print(f"Baseline model parameters: base_channels={base_channels}, cond_dim={cond_dim}")
     
-    # 加载数据
+    # Load data
     input1 = np.load("shareddata/sf_input.npy", mmap_mode="r").astype(np.float32)
     target = np.load("shareddata/sf_res.npy", mmap_mode="r").astype(np.float32)
-    assert len(input1) == len(target), "数据长度不匹配"
+    assert len(input1) == len(target), "Data length mismatch"
     
-    # 生成背景场并标准化
+    # Generate background field and standardize
     input2 = gen_background(target)
     x1_mean, x1_std = input1.mean(0), input1.std(0) + 1e-6
     t_mean, t_std = target.mean(), target.std() + 1e-6
@@ -291,11 +291,11 @@ def main():
     input2 = (input2 - t_mean) / t_std
     target = (target - t_mean) / t_std
     
-    # 数据划分
+    # Data split
     train_idx, val_idx, test_idx = split_indices_by_year(len(input1))
-    print(f"数据划分: 训练{len(train_idx)}, 验证{len(val_idx)}, 测试{len(test_idx)}")
+    print(f"Data split: training {len(train_idx)}, validation {len(val_idx)}, test {len(test_idx)}")
     
-    # 数据加载器
+    # Data loaders
     train_loader = DataLoader(
         SoundField2DDataset(input1, input2, target, train_idx),
         batch_size=batch_size, shuffle=True, pin_memory=True, drop_last=True
@@ -309,7 +309,7 @@ def main():
         batch_size=batch_size, shuffle=False, pin_memory=True
     )
     
-    # 初始化模型
+    # Initialize model
     model = UNet2D(
         x1_dim=52,
         base_channels=base_channels,
@@ -318,73 +318,73 @@ def main():
         dropout=0.05
     ).to(device)
     
-    # 测试前向传播
+    # Test forward pass
     with torch.no_grad():
         test_x1 = torch.randn(2, 52).to(device)
         test_x2 = torch.randn(2, 36, 250).to(device)
-        print(f"测试前向传播:")
-        print(f"  输入x1形状: {test_x1.shape}")
-        print(f"  输入x2形状: {test_x2.shape}")
+        print(f"Testing forward pass:")
+        print(f"  Input x1 shape: {test_x1.shape}")
+        print(f"  Input x2 shape: {test_x2.shape}")
         
         output = model(test_x1, test_x2)
-        print(f"  输出形状: {output.shape}")
-        print(f"  预期输出: [2, 36, 250]")
+        print(f"  Output shape: {output.shape}")
+        print(f"  Expected output: [2, 36, 250]")
         
-        # 检查每个层的输出尺寸
-        print("\n检查各层输出尺寸:")
+        # Check output sizes of each layer
+        print("\nChecking output sizes of each layer:")
         x2 = test_x2.unsqueeze(1)
         cond = model.cond_encoder(test_x1)
-        print(f"  条件编码后: {cond.shape}")  # [2, 128]
+        print(f"  After condition encoder: {cond.shape}")  # [2, 128]
         
         cond_spatial = cond.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, 36, 250)
         cond_part = cond_spatial[:, :model.cond_dim // 4, :, :]
         x = torch.cat([x2, cond_part], dim=1)
-        print(f"  初始拼接后: {x.shape}")  # [2, 33, 36, 250] (1+128/4=33)
+        print(f"  After initial concatenation: {x.shape}")  # [2, 33, 36, 250] (1+128/4=33)
         
         x1_enc = model.inc(x)
-        print(f"  inc后: {x1_enc.shape}")  # [2, 32, 36, 250]
+        print(f"  After inc: {x1_enc.shape}")  # [2, 32, 36, 250]
         
         x2_enc = model.down1(x1_enc)
-        print(f"  down1后: {x2_enc.shape}")  # [2, 64, 18, 125]
+        print(f"  After down1: {x2_enc.shape}")  # [2, 64, 18, 125]
         
         x3_enc = model.down2(x2_enc)
-        print(f"  down2后: {x3_enc.shape}")  # [2, 128, 9, 62]
+        print(f"  After down2: {x3_enc.shape}")  # [2, 128, 9, 62]
         
         x4_enc = model.down3(x3_enc)
-        print(f"  down3后: {x4_enc.shape}")  # [2, 256, 4, 31]
+        print(f"  After down3: {x4_enc.shape}")  # [2, 256, 4, 31]
         
         bottleneck_out = model.bottleneck(x4_enc)
-        print(f"  bottleneck后: {bottleneck_out.shape}")  # [2, 256, 4, 31] (bilinear=True时factor=2)
+        print(f"  After bottleneck: {bottleneck_out.shape}")  # [2, 256, 4, 31] (factor=2 when bilinear=True)
         
         global_feat = F.adaptive_avg_pool2d(bottleneck_out, (1, 1)).flatten(1)
-        print(f"  全局特征: {global_feat.shape}")  # [2, 256]
+        print(f"  Global features: {global_feat.shape}")  # [2, 256]
         
         fused = torch.cat([global_feat, cond], dim=1)
-        print(f"  拼接条件后: {fused.shape}")  # [2, 384] (256+128)
+        print(f"  After concatenating condition: {fused.shape}")  # [2, 384] (256+128)
         
         fused = model.cond_fusion(fused)
-        print(f"  条件融合后: {fused.shape}")  # [2, 256]
+        print(f"  After condition fusion: {fused.shape}")  # [2, 256]
         
         fused_spatial = fused.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, 4, 31)
-        print(f"  重塑扩展后: {fused_spatial.shape}")  # [2, 256, 4, 31]
+        print(f"  After reshaping and expanding: {fused_spatial.shape}")  # [2, 256, 4, 31]
         
         x4_fused = bottleneck_out + fused_spatial
-        print(f"  融合特征: {x4_fused.shape}")  # [2, 256, 4, 31]
+        print(f"  Fused features: {x4_fused.shape}")  # [2, 256, 4, 31]
         
         x = model.up1(x4_fused, x3_enc)
-        print(f"  up1后: {x.shape}")  # [2, 256, 9, 62]
+        print(f"  After up1: {x.shape}")  # [2, 256, 9, 62]
         
         x = model.up2(x, x2_enc)
-        print(f"  up2后: {x.shape}")  # [2, 128, 18, 125]
+        print(f"  After up2: {x.shape}")  # [2, 128, 18, 125]
         
         x = model.up3(x, x1_enc)
-        print(f"  up3后: {x.shape}")  # [2, 32, 36, 250]
+        print(f"  After up3: {x.shape}")  # [2, 32, 36, 250]
         
         out = model.outc(x)
-        print(f"  最终输出: {out.shape}")  # [2, 1, 36, 250]
+        print(f"  Final output: {out.shape}")  # [2, 1, 36, 250]
         
     total_params, trainable_params = calculate_model_complexity(model)
-    print(f"模型参数统计: 总参数={total_params:,} 可训练参数={trainable_params:,}")
+    print(f"Model parameter statistics: total_params={total_params:,} trainable_params={trainable_params:,}")
     
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     criterion = nn.L1Loss()
@@ -394,7 +394,7 @@ def main():
     )
     scaler = torch.cuda.amp.GradScaler(enabled=device.type == "cuda")
     
-    # 训练记录字典
+    # Training history dictionary
     training_history = {
         'epoch': [],
         'learning_rate': [],
@@ -412,7 +412,7 @@ def main():
         }
     }
     
-    # 训练循环
+    # Training loop
     os.makedirs(out_dir, exist_ok=True)
     best_val, patience_counter = float("inf"), 0
     
@@ -443,7 +443,7 @@ def main():
             if batch_idx % 50 == 0:
                 print(f"  Batch {batch_idx:3d}/{len(train_loader):3d}: loss={loss.item():.5f}")
         
-        # 验证
+        # Validation
         model.eval()
         val_loss, val_rmse = 0, 0
         val_loss_real, val_rmse_real = 0, 0
@@ -466,7 +466,7 @@ def main():
                 val_rmse += mse_loss.item()
                 val_rmse_real += mse_loss_real.item()
         
-        # 计算平均值
+        # Compute averages
         train_loss_avg = train_loss / len(train_loader)
         train_rmse_avg = np.sqrt(train_rmse / len(train_loader))
         val_loss_avg = val_loss / len(val_loader)
@@ -474,7 +474,7 @@ def main():
         val_loss_real_avg = val_loss_real / len(val_loader)
         val_rmse_real_avg = np.sqrt(val_rmse_real / len(val_loader))
         
-        # 记录训练历史
+        # Record training history
         training_history['epoch'].append(epoch)
         training_history['learning_rate'].append(optimizer.param_groups[0]['lr'])
         training_history['train_loss'].append(train_loss_avg)
@@ -486,15 +486,15 @@ def main():
         
         scheduler.step(val_loss_avg)
         
-        # 输出
+        # Output
         print(f"[Epoch {epoch:03d}] lr={optimizer.param_groups[0]['lr']:.2e} | "
               f"train: loss={train_loss_avg:.3f} rmse={train_rmse_avg:.3f} | "
               f"val: loss={val_loss_avg:.3f} rmse={val_rmse_avg:.3f} | "
               f"time={time.time()-t0:.1f}s")
         
-        print(f"验证集的真实传播损失 loss={val_loss_real_avg:.3f} rmse={val_rmse_real_avg:.3f}")
+        print(f"Validation set real propagation loss loss={val_loss_real_avg:.3f} rmse={val_rmse_real_avg:.3f}")
         
-        # 保存模型
+        # Save model
         torch.save({
             "epoch": epoch, "best_val": best_val,
             "model": model.state_dict(), "optimizer": optimizer.state_dict(),
@@ -508,20 +508,20 @@ def main():
         if val_loss_avg < best_val - 1e-6:
             best_val = val_loss_avg
             torch.save(model.state_dict(), os.path.join(out_dir, "best.pt"))
-            print(f"✅ 新最佳模型: val_loss={best_val:.4f}")
+            print(f"✅ New best model: val_loss={best_val:.4f}")
             patience_counter = 0
         else:
             patience_counter += 1
             if patience_counter >= patience:
-                print(f"早停触发 (patience={patience})")
+                print(f"Early stopping triggered (patience={patience})")
                 break
     
-    # 保存训练历史
+    # Save training history
     history_path = os.path.join(out_dir, "training_history.npz")
     np.savez(history_path, **training_history)
     
     
-    # 测试
+    # Testing
     model.load_state_dict(torch.load(os.path.join(out_dir, "best.pt"), map_location=device))
     model.eval()
     
@@ -551,11 +551,11 @@ def main():
     test_loss_real_avg = test_loss_real / len(test_loader)
     test_rmse_real_avg = np.sqrt(test_rmse_real / len(test_loader))
     
-    print(f"[基准模型测试结果]")
+    print(f"[Baseline Model Test Results]")
     print(f"  loss={test_loss_avg:.5f} rmse={test_rmse_avg:.5f}")
-    print(f"  真实传播损失尺度 loss={test_loss_real_avg:.5f} rmse={test_rmse_real_avg:.5f}")
+    print(f"  Real propagation loss scale loss={test_loss_real_avg:.5f} rmse={test_rmse_real_avg:.5f}")
     
-    # 保存测试结果
+    # Save test results
     test_results = {
         'test_loss': test_loss_avg,
         'test_rmse': test_rmse_avg,
@@ -567,9 +567,8 @@ def main():
     np.savez(history_path, **training_history)
     
     
-    print("基准模型训练完成")
+    print("Baseline model training completed")
 
 
 if __name__ == "__main__":
-
     main()
