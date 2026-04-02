@@ -1,4 +1,4 @@
-# 二维定深声传播损失场预测-条件生成对抗网络基准模型 cGAN-2D
+# 2D Constant-Depth Sound Propagation Loss Field Prediction - Conditional Generative Adversarial Network Baseline Model cGAN-2D
 import os
 import time
 import numpy as np
@@ -10,10 +10,10 @@ from dataclasses import dataclass
 from my_functions import calculate_model_complexity
 
 
-# ==================== 数据工具 ====================
+# ==================== Data Utilities ====================
 def split_indices_by_year(n_samples: int = 18876, years: int = 13, months: int = 12, points: int = 121):
-    """按年份划分训练/验证/测试集索引"""
-    assert n_samples == years * months * points, f"样本数 {n_samples} 与 {years}*{months}*{points} 不匹配"
+    """Split indices into train/validation/test sets by year"""
+    assert n_samples == years * months * points, f"Number of samples {n_samples} does not match {years}*{months}*{points}"
     
     year_ids = np.repeat(np.arange(1, years + 1), months * points)
     train_idx = np.where(np.isin(year_ids, list(range(1, 8)) + [10, 11, 12, 13]))[0]
@@ -23,15 +23,15 @@ def split_indices_by_year(n_samples: int = 18876, years: int = 13, months: int =
 
 
 def gen_background(target):
-    """生成历史平均场: (12, 121, 36, 250)"""
-    return target.reshape(13, 12, 121, 36, 250).mean(axis=(0))
+    """Generate historical mean field: (12, 36, 250)"""
+    return target.reshape(13, 12, 121, 36, 250).mean(axis=(0, 2))
 
 
-# ==================== 数据集 ====================
+# ==================== Dataset ====================
 class SoundField2DDataset(Dataset):
     def __init__(self, input1, input2, target, indices):
         self.input1 = input1[indices].astype(np.float32)
-        # 注意：input2现在是二维场 (12, 121, 36, 250)
+        # Note: input2 is now a 2D field (12, 121, 36, 250)
         month_indices = (indices // 121) % 12
         pos_indices = indices % 121
         self.input2 = input2[month_indices, pos_indices, :, :].astype(np.float32)
@@ -46,7 +46,7 @@ class SoundField2DDataset(Dataset):
         return torch.from_numpy(self.input1[idx]), torch.from_numpy(x2), torch.from_numpy(y)
 
 
-# ==================== 生成器组件 ====================
+# ==================== Generator Components ====================
 class ResBlockFiLM2D(nn.Module):
     def __init__(self, channels, cond_dim, dilation=1, dropout=0.05, gn_groups=8):
         super().__init__()
@@ -69,20 +69,20 @@ class ResBlockFiLM2D(nn.Module):
 
 
 class Generator(nn.Module):
-    """生成器网络"""
+    """Generator network"""
     def __init__(self, x1_dim=52, base_ch=64, cond_dim=128, dropout=0.05):
         super().__init__()
-        # 膨胀率序列
+        # Dilation rate sequence
         dilations = (1, 2, 4, 8, 1, 2, 4, 8, 1, 2, 4, 8, 1, 2, 4, 8)
         
-        # 环境参数编码器
+        # Environmental parameter encoder
         self.cond_mlp = nn.Sequential(
             nn.Linear(x1_dim, 128), nn.ReLU(inplace=True),
             nn.Linear(128, 256), nn.ReLU(inplace=True),
             nn.Linear(256, cond_dim)
         )
         
-        # 条件特征调制器
+        # Conditional feature modulator
         self.stem = nn.Sequential(
             nn.Conv2d(1, base_ch//2, kernel_size=3, padding=1),
             nn.GroupNorm(8, base_ch//2),
@@ -96,7 +96,7 @@ class Generator(nn.Module):
             for d in dilations
         ])
         
-        # 声场重建器
+        # Sound field reconstructor
         self.head = nn.Sequential(
             nn.Conv2d(base_ch, base_ch // 2, kernel_size=3, padding=1),
             nn.GroupNorm(8, base_ch // 2),
@@ -113,12 +113,12 @@ class Generator(nn.Module):
     def forward(self, x1, x2):
         """
         Args:
-            x1: 条件向量 [batch, x1_dim]
-            x2: 历史平均场输入 [batch, height=36, width=250]
+            x1: Condition vector [batch, x1_dim]
+            x2: Historical mean field input [batch, height=36, width=250]
         Returns:
-            二维传播损失场 [batch, height=36, width=250]
+            2D propagation loss field [batch, height=36, width=250]
         """
-        # 添加通道维度 [batch, 1, height, width]
+        # Add channel dimension [batch, 1, height, width]
         x2 = x2.unsqueeze(1)
         cond = self.cond_mlp(x1)
         h = self.stem(x2)
@@ -129,18 +129,18 @@ class Generator(nn.Module):
         return self.head(h).squeeze(1)
 
 
-# ==================== 判别器组件 ====================
+# ==================== Discriminator Components ====================
 class ConditionalDiscriminator(nn.Module):
-    """条件判别器网络"""
+    """Conditional discriminator network"""
     def __init__(self, x1_dim=52, base_ch=64, img_height=36, img_width=250):
         super().__init__()
         
-        # 计算下采样后的空间维度
-        # 经过3次下采样(2x)：36->18->9->5, 250->125->63->32
+        # Compute spatial dimensions after downsampling
+        # After 3 downsampling steps (2x): 36->18->9->5, 250->125->63->32
         down_height = img_height // 8
         down_width = img_width // 8
         
-        # 条件编码器 - 生成与下采样后尺寸匹配的特征
+        # Condition encoder - produces features matching the downsampled size
         self.cond_encoder = nn.Sequential(
             nn.Linear(x1_dim, 128),
             nn.LeakyReLU(0.2, inplace=True),
@@ -149,9 +149,9 @@ class ConditionalDiscriminator(nn.Module):
             nn.Linear(256, down_height * down_width),  # 5 * 32 = 160
         )
         
-        # 图像特征提取器
+        # Image feature extractor
         self.conv_layers = nn.ModuleList([
-            # 输入: [batch, 1, 36, 250] (声场)
+            # Input: [batch, 1, 36, 250] (sound field)
             nn.Conv2d(1, base_ch, kernel_size=4, stride=2, padding=1),  # [18, 125]
             nn.LeakyReLU(0.2, inplace=True),
             
@@ -168,63 +168,63 @@ class ConditionalDiscriminator(nn.Module):
             nn.LeakyReLU(0.2, inplace=True),
         ])
         
-        # 条件特征与图像特征的融合
+        # Fusion of conditional features and image features
         self.fusion_layer = nn.Conv2d(base_ch*8 + 1, base_ch*8, kernel_size=1)
         
-        # 最终输出层 - 使用线性层输出logits
+        # Final output layer - uses linear layer to output logits
         self.output_layer = nn.Sequential(
             nn.Conv2d(base_ch*8, 1, kernel_size=3, stride=1, padding=1),  # [5, 32]
             nn.AdaptiveAvgPool2d(1),
             nn.Flatten(),
-            # 移除Sigmoid，因为BCEWithLogitsLoss会内部处理
+            # Sigmoid removed because BCEWithLogitsLoss handles it internally
         )
         
     def forward(self, x1, sound_field):
         """
         Args:
-            x1: 条件向量 [batch, x1_dim]
-            sound_field: 声场 [batch, height, width] 或 [batch, 1, height, width]
+            x1: Condition vector [batch, x1_dim]
+            sound_field: Sound field [batch, height, width] or [batch, 1, height, width]
         Returns:
-            判别器输出logits [batch, 1]
+            Discriminator output logits [batch, 1]
         """
         if sound_field.dim() == 3:
             sound_field = sound_field.unsqueeze(1)
         
         batch_size = sound_field.shape[0]
         
-        # 提取声场特征
+        # Extract sound field features
         features = sound_field
         for layer in self.conv_layers:
             features = layer(features)
         
-        # 处理条件信息
+        # Process conditional information
         cond_features = self.cond_encoder(x1)
-        # reshape条件特征为空间特征图 [batch, 1, 5, 32]
+        # Reshape conditional features to spatial feature map [batch, 1, 5, 32]
         cond_map = cond_features.view(batch_size, 1, features.size(2), features.size(3))
         
-        # 拼接声场特征和条件特征
+        # Concatenate sound field features and conditional features
         combined = torch.cat([features, cond_map], dim=1)
         fused = self.fusion_layer(combined)
         
-        # 最终输出logits
+        # Final output logits
         output = self.output_layer(fused)
         return output
 
 
-# ==================== 条件GAN模型 ====================
+# ==================== Conditional GAN Model ====================
 class cGAN2D(nn.Module):
-    """条件GAN模型"""
+    """Conditional GAN model"""
     def __init__(self, x1_dim=52, g_base_ch=64, d_base_ch=64, cond_dim=128, dropout=0.05):
         super().__init__()
         self.generator = Generator(x1_dim, g_base_ch, cond_dim, dropout)
         self.discriminator = ConditionalDiscriminator(x1_dim, d_base_ch)
     
     def forward(self, x1, x2):
-        """生成阶段前向传播"""
+        """Forward pass for generation stage"""
         return self.generator(x1, x2)
 
 
-# ==================== 训练工具 ====================
+# ==================== Training Utilities ====================
 @dataclass
 class Metrics:
     loss: float
@@ -244,18 +244,18 @@ def set_seed(seed=42):
 
 
 def gradient_penalty(discriminator, real_data, fake_data, x1, device):
-    """计算WGAN-GP的梯度惩罚"""
+    """Compute gradient penalty for WGAN-GP"""
     batch_size = real_data.size(0)
     alpha = torch.rand(batch_size, 1, 1, 1).to(device)
     
-    # 插值样本
+    # Interpolated samples
     interpolated = alpha * real_data + (1 - alpha) * fake_data
     interpolated.requires_grad_(True)
     
-    # 计算判别器输出
+    # Compute discriminator output
     d_interpolated = discriminator(x1, interpolated)
     
-    # 计算梯度
+    # Compute gradients
     gradients = torch.autograd.grad(
         outputs=d_interpolated,
         inputs=interpolated,
@@ -265,7 +265,7 @@ def gradient_penalty(discriminator, real_data, fake_data, x1, device):
         only_inputs=True
     )[0]
     
-    # 计算梯度惩罚
+    # Compute gradient penalty
     gradients = gradients.view(batch_size, -1)
     gradient_norm = gradients.norm(2, dim=1)
     penalty = ((gradient_norm - 1) ** 2).mean()
@@ -273,27 +273,27 @@ def gradient_penalty(discriminator, real_data, fake_data, x1, device):
     return penalty
 
 
-# ==================== 主训练函数 ====================
+# ==================== Main Training Function ====================
 def main():
-    # 配置参数
+    # Configuration parameters
     out_dir = "./outputs_2d_cgan"
     epochs, batch_size = 120, 16
-    lr_g, lr_d = 1e-4, 4e-4  # GAN通常使用较低的学习率
+    lr_g, lr_d = 1e-4, 4e-4  # GANs typically use lower learning rates
     weight_decay = 1e-4
     patience, seed = 20, 42
-    lambda_gp = 10  # 梯度惩罚系数
-    lambda_l1 = 100  # L1损失系数
+    lambda_gp = 10  # Gradient penalty coefficient
+    lambda_l1 = 100  # L1 loss coefficient
     
     set_seed(seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"使用设备: {device}")
+    print(f"Using device: {device}")
     
-    # 加载数据
+    # Load data
     input1 = np.load("shareddata/sf_input.npy", mmap_mode="r").astype(np.float32)
     target = np.load("shareddata/sf_res.npy", mmap_mode="r").astype(np.float32)
-    assert len(input1) == len(target), "数据长度不匹配"
+    assert len(input1) == len(target), "Data length mismatch"
     
-    # 生成背景场并标准化
+    # Generate background field and standardize
     input2 = gen_background(target)
     x1_mean, x1_std = input1.mean(0), input1.std(0) + 1e-6
     t_mean, t_std = target.mean(), target.std() + 1e-6
@@ -302,11 +302,11 @@ def main():
     input2 = (input2 - t_mean) / t_std
     target = (target - t_mean) / t_std
     
-    # 数据划分
+    # Data split
     train_idx, val_idx, test_idx = split_indices_by_year(len(input1))
-    print(f"数据划分: 训练{len(train_idx)}, 验证{len(val_idx)}, 测试{len(test_idx)}")
+    print(f"Data split: training {len(train_idx)}, validation {len(val_idx)}, test {len(test_idx)}")
     
-    # 数据加载器
+    # Data loaders
     train_loader = DataLoader(
         SoundField2DDataset(input1, input2, target, train_idx),
         batch_size=batch_size, shuffle=True, pin_memory=True, drop_last=True
@@ -320,34 +320,34 @@ def main():
         batch_size=batch_size, shuffle=False, pin_memory=True
     )
     
-    # 初始化模型
+    # Initialize model
     model = cGAN2D().to(device)
     g_params, g_trainable = calculate_model_complexity(model.generator)
     d_params, d_trainable = calculate_model_complexity(model.discriminator)
-    print(f"生成器参数: {g_params:,} (可训练: {g_trainable:,})")
-    print(f"判别器参数: {d_params:,} (可训练: {d_trainable:,})")
-    print(f"总参数: {g_params + d_params:,}")
+    print(f"Generator parameters: {g_params:,} (trainable: {g_trainable:,})")
+    print(f"Discriminator parameters: {d_params:,} (trainable: {d_trainable:,})")
+    print(f"Total parameters: {g_params + d_params:,}")
     
-    # 测试维度
+    # Test dimensions
     with torch.no_grad():
         test_batch = next(iter(train_loader))
         x1_test, x2_test, y_test = [x.to(device) for x in test_batch]
-        print(f"输入尺寸测试:")
+        print(f"Input size test:")
         print(f"  x1: {x1_test.shape}")  # [batch, 52]
         print(f"  x2: {x2_test.shape}")  # [batch, 36, 250]
         print(f"  y: {y_test.shape}")   # [batch, 36, 250]
         
-        # 测试生成器
+        # Test generator
         fake_y = model.generator(x1_test, x2_test)
-        print(f"  生成器输出: {fake_y.shape}")  # 应该是 [batch, 36, 250]
+        print(f"  Generator output: {fake_y.shape}")  # Should be [batch, 36, 250]
         
-        # 测试判别器
+        # Test discriminator
         d_out_real = model.discriminator(x1_test, y_test.unsqueeze(1))
         d_out_fake = model.discriminator(x1_test, fake_y.unsqueeze(1))
-        print(f"  判别器输出(real): {d_out_real.shape}")  # 应该是 [batch, 1]
-        print(f"  判别器输出(fake): {d_out_fake.shape}")  # 应该是 [batch, 1]
+        print(f"  Discriminator output (real): {d_out_real.shape}")  # Should be [batch, 1]
+        print(f"  Discriminator output (fake): {d_out_fake.shape}")  # Should be [batch, 1]
     
-    # 优化器
+    # Optimizers
     optimizer_g = torch.optim.AdamW(
         model.generator.parameters(), 
         lr=lr_g, 
@@ -361,12 +361,12 @@ def main():
         betas=(0.5, 0.999)
     )
     
-    # 损失函数 - 使用BCEWithLogitsLoss替代BCELoss
+    # Loss functions - using BCEWithLogitsLoss instead of BCELoss
     criterion_l1 = nn.L1Loss()
     criterion_mse = nn.MSELoss()
-    criterion_bce = nn.BCEWithLogitsLoss()  # 使用BCEWithLogitsLoss
+    criterion_bce = nn.BCEWithLogitsLoss()  # Using BCEWithLogitsLoss
     
-    # 学习率调度器
+    # Learning rate schedulers
     scheduler_g = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer_g, mode="min", factor=0.5, patience=5, min_lr=1e-6
     )
@@ -376,7 +376,7 @@ def main():
     
     scaler = torch.cuda.amp.GradScaler(enabled=device.type == "cuda")
     
-    # 训练记录字典
+    # Training history dictionary
     training_history = {
         'epoch': [],
         'learning_rate_g': [],
@@ -397,7 +397,7 @@ def main():
         'val_d_acc_fake': []
     }
     
-    # 训练循环
+    # Training loop
     os.makedirs(out_dir, exist_ok=True)
     best_val, patience_counter = float("inf"), 0
     
@@ -406,33 +406,33 @@ def main():
         model.train()
         train_g_loss, train_d_loss, train_l1_loss, train_rmse = 0, 0, 0, 0
         train_d_acc_real, train_d_acc_fake = 0, 0
-        n_critic = 5  # 每个生成器更新对应的判别器更新次数
+        n_critic = 5  # Number of discriminator updates per generator update
         
         for batch_idx, (x1, x2, y) in enumerate(train_loader):
             x1, x2, y = x1.to(device), x2.to(device), y.to(device)
             batch_size = x1.size(0)
             
-            # 真实标签和虚假标签
+            # Real and fake labels
             valid = torch.ones(batch_size, 1, requires_grad=False).to(device)
             fake = torch.zeros(batch_size, 1, requires_grad=False).to(device)
             
-            # ==================== 训练判别器 ====================
+            # ==================== Train Discriminator ====================
             model.discriminator.zero_grad()
             
             with torch.cuda.amp.autocast(enabled=device.type == "cuda"):
-                # 真实样本
+                # Real samples
                 real_pred = model.discriminator(x1, y.unsqueeze(1))
                 d_real_loss = criterion_bce(real_pred, valid)
                 
-                # 生成虚假样本
+                # Generate fake samples
                 fake_soundfield = model.generator(x1, x2)
                 fake_pred = model.discriminator(x1, fake_soundfield.unsqueeze(1).detach())
                 d_fake_loss = criterion_bce(fake_pred, fake)
                 
-                # 判别器总损失
+                # Total discriminator loss
                 d_loss = (d_real_loss + d_fake_loss) / 2
                 
-                # 计算判别器准确率
+                # Compute discriminator accuracy
                 train_d_acc_real += ((torch.sigmoid(real_pred) > 0.5).float().mean().item())
                 train_d_acc_fake += ((torch.sigmoid(fake_pred) < 0.5).float().mean().item())
             
@@ -440,24 +440,24 @@ def main():
             scaler.step(optimizer_d)
             scaler.update()
             
-            # ==================== 训练生成器 ====================
-            # 每n_critic次判别器更新后更新一次生成器
+            # ==================== Train Generator ====================
+            # Update generator every n_critic discriminator updates
             if batch_idx % n_critic == 0:
                 model.generator.zero_grad()
                 
                 with torch.cuda.amp.autocast(enabled=device.type == "cuda"):
-                    # 生成虚假样本
+                    # Generate fake samples
                     fake_soundfield = model.generator(x1, x2)
                     
-                    # 对抗损失
+                    # Adversarial loss
                     validity = model.discriminator(x1, fake_soundfield.unsqueeze(1))
                     g_adv_loss = criterion_bce(validity, valid)
                     
-                    # L1重建损失
+                    # L1 reconstruction loss
                     g_l1_loss = criterion_l1(fake_soundfield, y)
                     g_mse_loss = criterion_mse(fake_soundfield, y)
                     
-                    # 生成器总损失
+                    # Total generator loss
                     g_loss = g_adv_loss + lambda_l1 * g_l1_loss
                 
                 scaler.scale(g_loss).backward()
@@ -475,7 +475,7 @@ def main():
                       f"D_loss={d_loss.item():.5f}, D_real={torch.sigmoid(real_pred).mean().item():.3f}, "
                       f"D_fake={torch.sigmoid(fake_pred).mean().item():.3f}, G_loss={g_loss.item() if batch_idx % n_critic == 0 else 'N/A'}")
         
-        # 计算训练平均值
+        # Compute training averages
         train_d_loss_avg = train_d_loss / len(train_loader)
         train_g_loss_avg = train_g_loss / max(len(train_loader) / n_critic, 1)
         train_l1_loss_avg = train_l1_loss / max(len(train_loader) / n_critic, 1)
@@ -483,7 +483,7 @@ def main():
         train_d_acc_real_avg = train_d_acc_real / len(train_loader)
         train_d_acc_fake_avg = train_d_acc_fake / len(train_loader)
         
-        # ==================== 验证 ====================
+        # ==================== Validation ====================
         model.eval()
         val_g_loss, val_d_loss, val_l1_loss, val_rmse = 0, 0, 0, 0
         val_l1_loss_real, val_rmse_real = 0, 0
@@ -497,31 +497,31 @@ def main():
                 valid = torch.ones(batch_size, 1).to(device)
                 fake = torch.zeros(batch_size, 1).to(device)
                 
-                # 生成器验证
+                # Generator validation
                 fake_soundfield = model.generator(x1, x2)
                 
-                # 对抗损失
+                # Adversarial loss
                 validity = model.discriminator(x1, fake_soundfield.unsqueeze(1))
                 g_adv_loss = criterion_bce(validity, valid)
                 
-                # 重建损失
+                # Reconstruction loss
                 g_l1_loss = criterion_l1(fake_soundfield, y)
                 g_mse_loss = criterion_mse(fake_soundfield, y)
                 
                 g_loss = g_adv_loss + lambda_l1 * g_l1_loss
                 
-                # 判别器验证
+                # Discriminator validation
                 real_pred = model.discriminator(x1, y.unsqueeze(1))
                 fake_pred = model.discriminator(x1, fake_soundfield.unsqueeze(1).detach())
                 d_real_loss = criterion_bce(real_pred, valid)
                 d_fake_loss = criterion_bce(fake_pred, fake)
                 d_loss = (d_real_loss + d_fake_loss) / 2
                 
-                # 计算判别器准确率
+                # Compute discriminator accuracy
                 val_d_acc_real += ((torch.sigmoid(real_pred) > 0.5).float().mean().item())
                 val_d_acc_fake += ((torch.sigmoid(fake_pred) < 0.5).float().mean().item())
                 
-                # 真实尺度的传播损失误差
+                # Real-scale propagation loss errors
                 pred_real = fake_soundfield * t_std + t_mean
                 y_real = y * t_std + t_mean
                 l1_loss_real = criterion_l1(pred_real, y_real)
@@ -534,7 +534,7 @@ def main():
                 val_l1_loss_real += l1_loss_real.item()
                 val_rmse_real += mse_loss_real.item()
         
-        # 计算验证平均值
+        # Compute validation averages
         val_g_loss_avg = val_g_loss / len(val_loader)
         val_d_loss_avg = val_d_loss / len(val_loader)
         val_l1_loss_avg = val_l1_loss / len(val_loader)
@@ -544,7 +544,7 @@ def main():
         val_d_acc_real_avg = val_d_acc_real / len(val_loader)
         val_d_acc_fake_avg = val_d_acc_fake / len(val_loader)
         
-        # 记录训练历史
+        # Record training history
         training_history['epoch'].append(epoch)
         training_history['learning_rate_g'].append(optimizer_g.param_groups[0]['lr'])
         training_history['learning_rate_d'].append(optimizer_d.param_groups[0]['lr'])
@@ -563,18 +563,18 @@ def main():
         training_history['val_d_acc_real'].append(val_d_acc_real_avg)
         training_history['val_d_acc_fake'].append(val_d_acc_fake_avg)
         
-        # 更新学习率
+        # Update learning rates
         scheduler_g.step(val_l1_loss_avg)
         scheduler_d.step(val_d_loss_avg)
         
-        # 输出训练信息
+        # Print training information
         print(f"[Epoch {epoch:03d}] "
               f"lr_G={optimizer_g.param_groups[0]['lr']:.2e} "
               f"lr_D={optimizer_d.param_groups[0]['lr']:.2e}")
-        print(f"  真实传播损失尺度: L1={val_l1_loss_real_avg:.3f}, RMSE={val_rmse_real_avg:.3f}")
-        print(f"  时间: {time.time()-t0:.1f}s")
+        print(f"  Real propagation loss scale: L1={val_l1_loss_real_avg:.3f}, RMSE={val_rmse_real_avg:.3f}")
+        print(f"  Time: {time.time()-t0:.1f}s")
         
-        # 保存模型
+        # Save model
         torch.save({
             "epoch": epoch, "best_val": best_val,
             "generator": model.generator.state_dict(),
@@ -583,31 +583,31 @@ def main():
             "optimizer_d": optimizer_d.state_dict()
         }, os.path.join(out_dir, "last.pt"))
         
-        # 使用L1损失作为早停标准
+        # Use L1 loss as early stopping criterion
         if val_l1_loss_avg < best_val - 1e-6:
             best_val = val_l1_loss_avg
             torch.save(model.generator.state_dict(), os.path.join(out_dir, "best_generator.pt"))
             torch.save(model.discriminator.state_dict(), os.path.join(out_dir, "best_discriminator.pt"))
-            print(f"✅ 新最佳模型: val_l1_loss={best_val:.4f}")
+            print(f"✅ New best model: val_l1_loss={best_val:.4f}")
             patience_counter = 0
         else:
             patience_counter += 1
             if patience_counter >= patience:
-                print(f"早停触发 (patience={patience})")
+                print(f"Early stopping triggered (patience={patience})")
                 break
     
-    # 保存训练历史
+    # Save training history
     history_path = os.path.join(out_dir, "training_history.npz")
     np.savez(history_path, **training_history)
-    print(f"训练历史已保存到: {history_path}")
+    print(f"Training history saved to: {history_path}")
     
     
-    # ==================== 测试 ====================
+    # ==================== Testing ====================
     print("\n" + "="*50)
-    print("测试阶段")
+    print("Testing Phase")
     print("="*50)
     
-    # 加载最佳生成器
+    # Load best generator
     model.generator.load_state_dict(
         torch.load(os.path.join(out_dir, "best_generator.pt"), map_location=device)
     )
@@ -640,10 +640,10 @@ def main():
     test_l1_loss_real_avg = test_l1_loss_real / len(test_loader)
     test_rmse_real_avg = np.sqrt(test_rmse_real / len(test_loader))
     
-    print(f"[TEST] 标准化尺度: L1={test_l1_loss_avg:.5f}, RMSE={test_rmse_avg:.5f}")
-    print(f"[TEST] 真实传播损失尺度: L1={test_l1_loss_real_avg:.5f}, RMSE={test_rmse_real_avg:.5f}")
+    print(f"[TEST] Standardized scale: L1={test_l1_loss_avg:.5f}, RMSE={test_rmse_avg:.5f}")
+    print(f"[TEST] Real propagation loss scale: L1={test_l1_loss_real_avg:.5f}, RMSE={test_rmse_real_avg:.5f}")
     
-    # 保存测试结果
+    # Save test results
     test_results = {
         'test_l1_loss': test_l1_loss_avg,
         'test_rmse': test_rmse_avg,
@@ -655,7 +655,7 @@ def main():
     np.savez(history_path, **training_history)
     
     
-    print("GAN训练完成")
+    print("GAN training completed")
 
 
 if __name__ == "__main__":
